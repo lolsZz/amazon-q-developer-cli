@@ -123,6 +123,9 @@ use util::{
 };
 use winnow::Partial;
 use winnow::stream::Offset;
+use serde_json::json;
+use std::fs::{OpenOptions, create_dir_all};
+use dirs;
 
 use super::agent::PermissionEvalResult;
 use crate::api_client::model::ToolResultStatus;
@@ -527,6 +530,43 @@ impl From<parser::RecvError> for ChatError {
     }
 }
 
+struct AuditLogger {
+    file: std::fs::File,
+    session_id: String,
+}
+
+impl AuditLogger {
+    fn new(session_id: &str) -> std::io::Result<Self> {
+        let base = dirs::data_dir()
+            .unwrap_or(std::env::temp_dir())
+            .join("amazon-q-cli")
+            .join("audit");
+        create_dir_all(&base)?;
+        let path = base.join(format!("session-{}.jsonl", session_id));
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            file,
+            session_id: session_id.to_string(),
+        })
+    }
+
+    fn log_event(&mut self, typ: &str, data: serde_json::Value) {
+        let ts = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string());
+        let record = json!({
+            "ts": ts,
+            "session_id": self.session_id,
+            "type": typ,
+            "data": data
+        });
+        if let Ok(line) = serde_json::to_string(&record) {
+            let _ = self.file.write_all(line.as_bytes());
+            let _ = self.file.write_all(b"\n");
+        }
+    }
+}
+
 pub struct ChatSession {
     /// For output read by humans and machine
     pub stdout: std::io::Stdout,
@@ -564,6 +604,7 @@ pub struct ChatSession {
     interactive: bool,
     inner: Option<ChatState>,
     ctrlc_rx: broadcast::Receiver<()>,
+    audit: Option<AuditLogger>,
 }
 
 impl ChatSession {
@@ -644,7 +685,7 @@ impl ChatSession {
                 cs
             },
             false => {
-                ConversationState::new(conversation_id, agents, tool_config, tool_manager, Some(valid_model_id)).await
+                ConversationState::new(conversation_id, agents, tool_config, tool_manager, Some(valid_model_id.clone())).await
             },
         };
 
@@ -659,11 +700,23 @@ impl ChatSession {
                             .map_err(|err| error!(?err, "failed to send ctrlc to broadcast channel"));
                     },
                     Err(err) => {
-                        error!(?err, "Encountered an error while receiving a ctrl+c");
-                    },
+                error!(?err, "Encountered an error while receiving a ctrl+c");
+            },
                 }
             }
         });
+
+        let mut audit = AuditLogger::new(conversation_id).ok();
+        if let Some(a) = &mut audit {
+            a.log_event(
+                "session_start",
+                json!({
+                    "interactive": interactive,
+                    "resume": resume_conversation,
+                    "model_id": valid_model_id
+                }),
+            );
+        }
 
         Ok(Self {
             stdout,
@@ -685,6 +738,7 @@ impl ChatSession {
             interactive,
             inner: Some(ChatState::default()),
             ctrlc_rx,
+            audit,
         })
     }
 
@@ -1047,6 +1101,9 @@ impl ChatSession {
 
 impl Drop for ChatSession {
     fn drop(&mut self) {
+        if let Some(a) = self.audit.as_mut() {
+            a.log_event("session_end", json!({}));
+        }
         if let Some(spinner) = &mut self.spinner {
             spinner.stop();
         }
@@ -1581,6 +1638,9 @@ impl ChatSession {
             Some(input) => input,
             None => return Ok(ChatState::Exit),
         };
+        if let Some(a) = self.audit.as_mut() {
+            a.log_event("user_input", json!({ "input": user_input }));
+        }
 
         self.conversation.append_user_transcript(&user_input);
         Ok(ChatState::HandleInput { input: user_input })
@@ -1742,27 +1802,38 @@ impl ChatSession {
             if let Some(index) = self.pending_tool_index {
                 let is_trust = ["t", "T"].contains(&input);
                 let tool_use = &mut self.tool_uses[index];
-                if ["y", "Y"].contains(&input) || is_trust {
-                    if is_trust {
-                        let formatted_tool_name = self
-                            .conversation
-                            .tool_manager
-                            .tn_map
-                            .get(&tool_use.name)
-                            .map(|info| {
-                                format!(
-                                    "@{}{MCP_SERVER_TOOL_DELIMITER}{}",
-                                    info.server_name, info.host_tool_name
-                                )
-                            })
-                            .clone()
-                            .unwrap_or(tool_use.name.clone());
-                        self.conversation.agents.trust_tools(vec![formatted_tool_name]);
-                    }
-                    tool_use.accepted = true;
+                    if ["y", "Y"].contains(&input) || is_trust {
+                        if is_trust {
+                            let formatted_tool_name = self
+                                .conversation
+                                .tool_manager
+                                .tn_map
+                                .get(&tool_use.name)
+                                .map(|info| {
+                                    format!(
+                                        "@{}{MCP_SERVER_TOOL_DELIMITER}{}",
+                                        info.server_name, info.host_tool_name
+                                    )
+                                })
+                                .clone()
+                                .unwrap_or(tool_use.name.clone());
+                            self.conversation.agents.trust_tools(vec![formatted_tool_name]);
+                        }
+                        tool_use.accepted = true;
+                        if let Some(a) = self.audit.as_mut() {
+                            a.log_event(
+                                "tool_decision",
+                                json!({
+                                    "decision": "accept",
+                                    "trust": is_trust,
+                                    "tool_use_id": tool_use.id,
+                                    "tool_name": tool_use.name
+                                }),
+                            );
+                        }
 
-                    return Ok(ChatState::ExecuteTools);
-                }
+                        return Ok(ChatState::ExecuteTools);
+                    }
             } else if !self.pending_prompts.is_empty() {
                 let prompts = self.pending_prompts.drain(0..).collect();
                 user_input = self
@@ -1780,6 +1851,21 @@ impl ChatSession {
                 // TODO: Update this flow to something that does *not* require two requests just to
                 // get a meaningful response from the user - this is a short term solution before
                 // we decide on a better flow.
+                if ["n", "N"].contains(&user_input.trim()) {
+                    if let Some(a) = self.audit.as_mut() {
+                        if let Some(idx) = self.pending_tool_index {
+                            let t = &self.tool_uses[idx];
+                            a.log_event(
+                                "tool_decision",
+                                json!({
+                                    "decision": "deny",
+                                    "tool_use_id": t.id,
+                                    "tool_name": t.name
+                                }),
+                            );
+                        }
+                    }
+                }
                 let user_input = if ["n", "N"].contains(&user_input.trim()) {
                     "I deny this tool request. Ask a follow up question clarifying the expected action".to_string()
                 } else {
@@ -1896,6 +1982,20 @@ impl ChatSession {
         let mut image_blocks: Vec<RichImageBlock> = Vec::new();
 
         for tool in &self.tool_uses {
+            if let Some(a) = self.audit.as_mut() {
+                let server = match &tool.tool {
+                    Tool::Custom(ct) => Some(ct.client.get_server_name().to_string()),
+                    _ => None,
+                };
+                a.log_event(
+                    "tool_execute_start",
+                    json!({
+                        "tool_use_id": tool.id,
+                        "tool_name": tool.name,
+                        "mcp_server": server
+                    }),
+                );
+            }
             let tool_start = std::time::Instant::now();
             let mut tool_telemetry = self.tool_use_telemetry_events.entry(tool.id.clone());
             tool_telemetry = tool_telemetry.and_modify(|ev| {
@@ -1963,6 +2063,16 @@ impl ChatSession {
                     }
 
                     debug!("tool result output: {:#?}", result);
+                    if let Some(a) = self.audit.as_mut() {
+                        a.log_event(
+                            "tool_execute_end",
+                            json!({
+                                "tool_use_id": tool.id,
+                                "status": "success",
+                                "output": result.as_str()
+                            }),
+                        );
+                    }
                     execute!(
                         self.stdout,
                         style::Print(CONTINUATION_LINE),
@@ -2165,6 +2275,14 @@ impl ChatSession {
                             // the response timeout message.
                             if message.content() == RESPONSE_TIMEOUT_CONTENT {
                                 error!(?request_id, ?message, "Encountered an unexpected model response");
+                            }
+                            if let Some(a) = self.audit.as_mut() {
+                                a.log_event(
+                                    "assistant_message",
+                                    json!({
+                                        "content": message.content()
+                                    }),
+                                );
                             }
                             self.conversation.push_assistant_message(os, message, Some(rm.clone()));
                             self.user_turn_request_metadata.push(rm);
@@ -2425,6 +2543,11 @@ impl ChatSession {
 
         // If we have any validation errors, then return them immediately to the model.
         if !tool_results.is_empty() {
+            if let Some(a) = self.audit.as_mut() {
+                a.log_event("tool_validation_failed", json!({
+                    "count": tool_results.len()
+                }));
+            }
             debug!(?tool_results, "Error found in the model tools");
             queue!(
                 self.stderr,
@@ -2472,6 +2595,10 @@ impl ChatSession {
             ));
         }
 
+        if let Some(a) = self.audit.as_mut() {
+            let names: Vec<_> = queued_tools.iter().map(|t| json!({"id": t.id, "name": t.name})).collect();
+            a.log_event("tool_validation_succeeded", json!({ "tools": names }));
+        }
         self.tool_uses = queued_tools;
         self.pending_tool_index = Some(0);
         self.tool_turn_start_time = Some(Instant::now());

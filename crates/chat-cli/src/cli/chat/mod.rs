@@ -365,6 +365,7 @@ impl ChatArgs {
     }
 }
 
+#[allow(dead_code)]
 const WELCOME_TEXT: &str = color_print::cstr! {"<cyan!>
     ⢠⣶⣶⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣶⣿⣿⣿⣶⣦⡀⠀
  ⠀⠀⠀⣾⡿⢻⣿⡆⠀⠀⠀⢀⣄⡄⢀⣠⣤⣤⡀⢀⣠⣤⣤⡀⠀⠀⢀⣠⣤⣤⣤⣄⠀⠀⢀⣤⣤⣤⣤⣤⣤⡀⠀⠀⣀⣤⣤⣤⣀⠀⠀⠀⢠⣤⡀⣀⣤⣤⣄⡀⠀⠀⠀⠀⠀⠀⢠⣿⣿⠋⠀⠀⠀⠙⣿⣿⡆
@@ -374,7 +375,9 @@ const WELCOME_TEXT: &str = color_print::cstr! {"<cyan!>
  ⠚⠛⠋⠀⠀⠀⠀⠘⠛⠛⠀⠘⠛⠛⠀⠀⠀⠛⠛⠀⠀⠀⠛⠛⠀⠀⠙⠻⠿⠟⠋⠛⠛⠀⠘⠛⠛⠛⠛⠛⠛⠃⠀⠈⠛⠿⠿⠿⠛⠁⠀⠀⠘⠛⠃⠀⠀⠘⠛⠛⠀⠀⠀⠀⠀⠀⠀⠀⠙⠛⠿⢿⣿⣿⣋⠀⠀
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠛⠿⢿⡧</cyan!>"};
 
+#[allow(dead_code)]
 const SMALL_SCREEN_WELCOME_TEXT: &str = color_print::cstr! {"<em>Welcome to <cyan!>Amazon Q</cyan!>!</em>"};
+#[allow(dead_code)]
 const RESUME_TEXT: &str = color_print::cstr! {"<em>Picking up where we left off...</em>"};
 
 // Only show the model-related tip for now to make users aware of this feature.
@@ -531,6 +534,7 @@ pub struct ChatSession {
     pub stderr: std::io::Stderr,
     initial_input: Option<String>,
     /// Whether we're starting a new conversation or continuing an old one.
+    #[allow(dead_code)]
     existing_conversation: bool,
     input_source: InputSource,
     /// Width of the terminal, required for [ParseState].
@@ -1139,13 +1143,7 @@ impl ChatSession {
             .get_bool(Setting::ChatGreetingEnabled)
             .unwrap_or(true)
         {
-            let welcome_text = match self.existing_conversation {
-                true => RESUME_TEXT,
-                false => match is_small_screen {
-                    true => SMALL_SCREEN_WELCOME_TEXT,
-                    false => WELCOME_TEXT,
-                },
-            };
+            let welcome_text = "Welcome to Q-cli for ALIA";
 
             execute!(self.stderr, style::Print(welcome_text), style::Print("\n\n"),)?;
 

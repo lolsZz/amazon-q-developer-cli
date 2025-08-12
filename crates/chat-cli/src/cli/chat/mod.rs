@@ -1992,7 +1992,8 @@ impl ChatSession {
                     json!({
                         "tool_use_id": tool.id,
                         "tool_name": tool.name,
-                        "mcp_server": server
+                        "mcp_server": server,
+                        "metadata": tool.tool.audit_metadata()
                     }),
                 );
             }
@@ -2031,6 +2032,7 @@ impl ChatSession {
 
             let tool_end_time = Instant::now();
             let tool_time = tool_end_time.duration_since(tool_start);
+            let tool_duration_ms = tool_time.as_millis();
             tool_telemetry = tool_telemetry.and_modify(|ev| {
                 ev.execution_duration = Some(tool_time);
                 ev.turn_duration = self.tool_turn_start_time.map(|t| tool_end_time.duration_since(t));
@@ -2069,7 +2071,10 @@ impl ChatSession {
                             json!({
                                 "tool_use_id": tool.id,
                                 "status": "success",
-                                "output": result.as_str()
+                                "output": result.as_str(),
+                                "output_len": result.as_str().len(),
+                                "duration_ms": tool_duration_ms,
+                                "metadata": tool.tool.audit_metadata()
                             }),
                         );
                     }
@@ -2150,6 +2155,18 @@ impl ChatSession {
                         ))],
                         status: ToolResultStatus::Error,
                     });
+                    if let Some(a) = self.audit.as_mut() {
+                        a.log_event(
+                            "tool_execute_end",
+                            json!({
+                                "tool_use_id": tool.id,
+                                "status": "error",
+                                "error": err.to_string(),
+                                "duration_ms": tool_duration_ms,
+                                "metadata": tool.tool.audit_metadata()
+                            }),
+                        );
+                    }
                     if let ToolUseStatus::Idle = self.tool_use_status {
                         self.tool_use_status = ToolUseStatus::RetryInProgress(
                             self.conversation
@@ -2596,7 +2613,10 @@ impl ChatSession {
         }
 
         if let Some(a) = self.audit.as_mut() {
-            let names: Vec<_> = queued_tools.iter().map(|t| json!({"id": t.id, "name": t.name})).collect();
+            let names: Vec<_> = queued_tools
+                .iter()
+                .map(|t| json!({"id": t.id, "name": t.name, "metadata": t.tool.audit_metadata()}))
+                .collect();
             a.log_event("tool_validation_succeeded", json!({ "tools": names }));
         }
         self.tool_uses = queued_tools;

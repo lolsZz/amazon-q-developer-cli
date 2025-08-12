@@ -37,6 +37,7 @@ use serde::{
 use thinking::Thinking;
 use tracing::error;
 use use_aws::UseAws;
+use serde_json::json;
 
 use super::consts::{
     MAX_TOOL_RESPONSE_SIZE,
@@ -167,6 +168,35 @@ impl Tool {
             Tool::UseAws(use_aws) => Some(use_aws.get_additional_info()),
             // Add other tool types here as they implement get_additional_info()
             _ => None,
+        }
+    }
+}
+
+impl Tool {
+    /// Returns lightweight metadata about the tool instance for auditing.
+    ///
+    /// Intentionally avoids dumping very large fields (e.g. full file contents) to keep
+    /// audit records compact. Expand as needed.
+    pub fn audit_metadata(&self) -> serde_json::Value {
+        match self {
+            Tool::FsRead(fr) => json!({
+                "type": "fs_read",
+                "operations": fr.operations.len(),
+                "summary": fr.summary
+            }),
+            Tool::FsWrite(_) => json!({"type": "fs_write"}),
+            Tool::ExecuteCommand(_) => json!({"type": "execute_command"}),
+            Tool::UseAws(_) => json!({"type": "use_aws"}),
+            Tool::Custom(ct) => json!({
+                "type": "custom",
+                "name": ct.name,
+                "method": ct.method,
+                "has_params": ct.params.is_some(),
+                "params": ct.params
+            }),
+            Tool::GhIssue(_) => json!({"type": "gh_issue"}),
+            Tool::Knowledge(_) => json!({"type": "knowledge"}),
+            Tool::Thinking(_) => json!({"type": "thinking"}),
         }
     }
 }

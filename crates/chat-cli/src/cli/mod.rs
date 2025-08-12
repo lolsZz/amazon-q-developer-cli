@@ -14,6 +14,8 @@ use std::io::{
     stdout,
 };
 use std::process::ExitCode;
+use std::path::PathBuf;
+use std::fs;
 
 use agent::AgentArgs;
 use anstream::println;
@@ -81,6 +83,15 @@ impl OutputFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Elvish,
+    PowerShell,
+}
+
 /// The Amazon Q CLI
 #[deny(missing_docs)]
 #[derive(Debug, PartialEq, Subcommand)]
@@ -116,6 +127,15 @@ pub enum RootSubcommand {
     /// Model Context Protocol (MCP)
     #[command(subcommand)]
     Mcp(McpSubcommand),
+    /// Generate shell completion scripts (fish, zsh, bash, elvish, powershell).
+    Completions {
+        /// Target shell (omit to generate all)
+        #[arg(long, value_enum)]
+        shell: Option<CompletionShell>,
+        /// Output directory (defaults: fish -> ~/.config/fish/completions, others -> current dir)
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
 }
 
 impl RootSubcommand {
@@ -159,6 +179,48 @@ impl RootSubcommand {
             Self::Version { changelog } => Cli::print_version(changelog),
             Self::Chat(args) => args.execute(os).await,
             Self::Mcp(args) => args.execute(os, &mut std::io::stderr()).await,
+            Self::Completions { shell, out_dir } => {
+                use clap_complete::{
+                    generate_to,
+                    shells::{Bash, Zsh, Fish, Elvish, PowerShell},
+                };
+
+                let mut cmd = Cli::command();
+                cmd.build();
+
+                let shells: Vec<CompletionShell> = match shell {
+                    Some(s) => vec![s],
+                    None => vec![
+                        CompletionShell::Bash,
+                        CompletionShell::Zsh,
+                        CompletionShell::Fish,
+                        CompletionShell::Elvish,
+                        CompletionShell::PowerShell,
+                    ],
+                };
+
+                for sh in shells {
+                    let target_dir: PathBuf = if let Some(ref od) = out_dir {
+                        od.clone()
+                    } else if matches!(sh, CompletionShell::Fish) {
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".config/fish/completions")
+                    } else {
+                        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                    };
+                    fs::create_dir_all(&target_dir)?;
+                    let path = match sh {
+                        CompletionShell::Bash => generate_to(Bash, &mut cmd, CLI_BINARY_NAME, &target_dir)?,
+                        CompletionShell::Zsh => generate_to(Zsh, &mut cmd, CLI_BINARY_NAME, &target_dir)?,
+                        CompletionShell::Fish => generate_to(Fish, &mut cmd, CLI_BINARY_NAME, &target_dir)?,
+                        CompletionShell::Elvish => generate_to(Elvish, &mut cmd, CLI_BINARY_NAME, &target_dir)?,
+                        CompletionShell::PowerShell => generate_to(PowerShell, &mut cmd, CLI_BINARY_NAME, &target_dir)?,
+                    };
+                    println!("Generated {:?} completion at {}", sh, path.display());
+                }
+                Ok(ExitCode::SUCCESS)
+            },
         }
     }
 }
@@ -183,6 +245,7 @@ impl Display for RootSubcommand {
             Self::Issue(_) => "issue",
             Self::Version { .. } => "version",
             Self::Mcp(_) => "mcp",
+            Self::Completions { .. } => "completions",
         };
 
         write!(f, "{name}")
